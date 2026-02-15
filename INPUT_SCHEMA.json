@@ -9,9 +9,18 @@
       "type": "array",
       "description": "List of search queries. Each query can include a keyword and optional location.",
       "prefill": [
-        { "keyword": "plumber", "location": "Ocala, FL" }
+        { "keyword": "plumber", "location": "Ocala, FL" },
+        { "keyword": "hvac", "location": "Ocala, FL" }
       ],
-      "editor": "json"
+      "editor": "json",
+      "items": {
+        "type": "object",
+        "properties": {
+          "keyword": { "type": "string" },
+          "location": { "type": "string" }
+        },
+        "required": ["keyword"]
+      }
     },
     "country": {
       "title": "Country",
