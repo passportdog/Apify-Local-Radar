@@ -1,6 +1,6 @@
 /**
  * Core scraping logic for Meta Ads Library
- * Optimized for efficiency and reliability
+ * AGGRESSIVE MODE - Optimized for speed
  */
 
 import { Page } from 'playwright';
@@ -8,6 +8,84 @@ import { MetaAd, SearchQuery } from './types.js';
 import { log } from 'crawlee';
 
 const AD_LIBRARY_BASE = 'https://www.facebook.com/ads/library/';
+
+/**
+ * Generate a unique fingerprint for an ad
+ */
+export function generateAdFingerprint(ad: Partial<MetaAd>): string {
+  const components = [
+    ad.page_id || '',
+    ad.page_name || '',
+    (ad.ad_text || '').toLowerCase().replace(/\s+/g, ' ').trim().substring(0, 200),
+    (ad.media_urls?.[0] || '').split('?')[0],
+    (ad.cta_text || '').toLowerCase(),
+  ].join('|');
+  
+  let hash = 0;
+  for (let i = 0; i < components.length; i++) {
+    const char = components.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  
+  return `meta_${Math.abs(hash).toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Deduplicate ads by fingerprint
+ */
+export function deduplicateAds(ads: MetaAd[]): MetaAd[] {
+  const seen = new Set<string>();
+  const unique: MetaAd[] = [];
+  
+  for (const ad of ads) {
+    if (!ad.ad_fingerprint) {
+      ad.ad_fingerprint = generateAdFingerprint(ad);
+    }
+    
+    if (!seen.has(ad.ad_fingerprint)) {
+      seen.add(ad.ad_fingerprint);
+      unique.push(ad);
+    }
+  }
+  
+  return unique;
+}
+
+/**
+ * Deduplication tracker for use during scraping
+ */
+export class DeduplicationTracker {
+  private seen = new Set<string>();
+  private duplicateCount = 0;
+  
+  isNew(ad: MetaAd): boolean {
+    if (!ad.ad_fingerprint) {
+      ad.ad_fingerprint = generateAdFingerprint(ad);
+    }
+    
+    if (this.seen.has(ad.ad_fingerprint)) {
+      this.duplicateCount++;
+      return false;
+    }
+    
+    this.seen.add(ad.ad_fingerprint);
+    return true;
+  }
+  
+  loadExisting(fingerprints: string[]) {
+    for (const fp of fingerprints) {
+      this.seen.add(fp);
+    }
+  }
+  
+  get stats() {
+    return {
+      unique: this.seen.size,
+      duplicates: this.duplicateCount,
+    };
+  }
+}
 
 /**
  * Build the Meta Ad Library URL with filters
@@ -33,19 +111,17 @@ export function buildSearchUrl(
 }
 
 /**
- * Wait for ads to load with smart detection
+ * Wait for ads to load - FAST version
  */
-async function scrollAndLoadMore(page: Page, timeout = 15000): Promise<boolean> {
+async function waitForAds(page: Page, timeout = 10000): Promise<boolean> {
   try {
-    // Wait for either ads container or "no results" message
     await Promise.race([
       page.waitForSelector('[data-testid="ad_archive_renderer_card"]', { timeout }),
       page.waitForSelector('div[role="article"]', { timeout }),
       page.waitForSelector('text=No ads match', { timeout: 5000 }).catch(() => null),
     ]);
     
-    // Additional wait for dynamic content
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1000);
     return true;
   } catch {
     return false;
@@ -53,185 +129,166 @@ async function scrollAndLoadMore(page: Page, timeout = 15000): Promise<boolean> 
 }
 
 /**
- * Scroll and load more ads
+ * Fast scroll and load more ads
  */
-async function scrollAndLoadMore(
-  page: Page, 
-  maxAds: number,
-  currentCount: number
-): Promise<number> {
-  let previousCount = currentCount;
+async function scrollForMore(page: Page, maxAds: number): Promise<number> {
+  let previousCount = 0;
   let noNewAdsCount = 0;
-  const maxScrollAttempts = 50;
+  const maxNoNewAds = 2;
   
-  for (let i = 0; i < maxScrollAttempts && currentCount < maxAds; i++) {
-    // Scroll down
-    await page.evaluate(() => {
-      window.scrollBy(0, 800);
-    });
-    
-    // Human-like delay
-    await page.waitForTimeout(1500 + Math.random() * 1500);
-    
-    // Count current ads
-    const newCount = await page.evaluate(() => {
+  while (noNewAdsCount < maxNoNewAds) {
+    const currentCount = await page.evaluate(() => {
       const cards = document.querySelectorAll('[data-testid="ad_archive_renderer_card"], div[role="article"]');
       return cards.length;
     });
     
-    if (newCount === previousCount) {
-      noNewAdsCount++;
-      if (noNewAdsCount >= 3) {
-        log.info(`No new ads after ${noNewAdsCount} scroll attempts, stopping`);
-        break;
-      }
-    } else {
-      noNewAdsCount = 0;
-      previousCount = newCount;
+    if (currentCount >= maxAds) {
+      log.debug(`Reached max ads limit: ${currentCount}`);
+      break;
     }
     
-    currentCount = newCount;
-    log.debug(`Scroll ${i + 1}: Found ${currentCount} ads`);
+    if (currentCount === previousCount) {
+      noNewAdsCount++;
+    } else {
+      noNewAdsCount = 0;
+    }
+    
+    previousCount = currentCount;
+    
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    
+    await page.waitForTimeout(800);
+    
+    try {
+      const seeMoreButton = await page.$('text=See more');
+      if (seeMoreButton) {
+        await seeMoreButton.click();
+        await page.waitForTimeout(500);
+      }
+    } catch {
+      // No button, continue
+    }
   }
   
-  return currentCount;
+  return previousCount;
 }
 
 /**
- * Extract ad data from page
+ * Extract ads from page
  */
-export async function extractAds(
-  page: Page,
-  query: SearchQuery,
-  sourceUrl: string
-): Promise<MetaAd[]> {
-  const ads = await page.evaluate((params) => {
-    const { queryKeyword, queryLocation, sourceUrl } = params;
+async function extractAdsFromPage(page: Page, query: SearchQuery): Promise<MetaAd[]> {
+  const ads = await page.evaluate((searchQuery) => {
     const results: any[] = [];
+    const cards = document.querySelectorAll('[data-testid="ad_archive_renderer_card"], div[role="article"]');
     
-    // Find all ad cards
-    const adCards = document.querySelectorAll('[data-testid="ad_archive_renderer_card"], div[role="article"]');
-    
-    adCards.forEach((card, index) => {
+    cards.forEach((card, index) => {
       try {
-        // Extract page info
-        const pageNameEl = card.querySelector('a[href*="/ads/library/?active_status"][role="link"] span, h4 a, strong');
+        const pageNameEl = card.querySelector('a[href*="/ads/library/?active_status"]') ||
+                          card.querySelector('h3') ||
+                          card.querySelector('span[dir="auto"]');
         const pageName = pageNameEl?.textContent?.trim() || 'Unknown';
         
-        // Extract page ID from link
-        const pageLinkEl = card.querySelector('a[href*="facebook.com/"]');
-        const pageLink = pageLinkEl?.getAttribute('href') || '';
-        const pageIdMatch = pageLink.match(/facebook\.com\/(\d+)/);
-        const pageId = pageIdMatch ? pageIdMatch[1] : `unknown_${index}`;
+        let pageId = '';
+        const pageLink = card.querySelector('a[href*="page_id="]');
+        if (pageLink) {
+          const href = pageLink.getAttribute('href') || '';
+          const match = href.match(/page_id=(\d+)/);
+          if (match) pageId = match[1];
+        }
         
-        // Extract profile picture
-        const profilePicEl = card.querySelector('img[src*="scontent"]');
-        const profilePicUrl = profilePicEl?.getAttribute('src') || '';
+        const profileImg = card.querySelector('img[src*="scontent"]');
+        const profilePicture = profileImg?.getAttribute('src') || '';
         
-        // Extract ad text/body
-        const adTextEls = card.querySelectorAll('div[data-testid="ad_archive_renderer_description"] span, div[dir="auto"] span');
-        const adTexts: string[] = [];
-        adTextEls.forEach(el => {
-          const text = el.textContent?.trim();
-          if (text && text.length > 20 && !adTexts.includes(text)) {
-            adTexts.push(text);
-          }
-        });
+        const textContainer = card.querySelector('div[style*="webkit-line-clamp"]') ||
+                             card.querySelector('div[data-testid="ad_archive_renderer_card_body"]') ||
+                             card.querySelector('span[dir="auto"]:not(:first-child)');
+        const adText = textContainer?.textContent?.trim() || '';
         
-        // Extract media
-        const imageEls = card.querySelectorAll('img[src*="scontent"]:not([src*="profile"]):not([width="40"])');
-        const videoEl = card.querySelector('video');
+        const images = card.querySelectorAll('img:not([src*="scontent"])');
+        const videos = card.querySelectorAll('video');
         const mediaUrls: string[] = [];
         
-        imageEls.forEach(img => {
+        images.forEach(img => {
           const src = img.getAttribute('src');
-          if (src && !src.includes('emoji') && !mediaUrls.includes(src)) {
+          if (src && !src.includes('emoji') && !src.includes('static')) {
             mediaUrls.push(src);
           }
         });
         
-        const videoUrl = videoEl?.getAttribute('src') || '';
-        if (videoUrl) mediaUrls.push(videoUrl);
+        videos.forEach(video => {
+          const src = video.getAttribute('src') || video.querySelector('source')?.getAttribute('src');
+          if (src) mediaUrls.push(src);
+        });
         
-        // Determine media type
-        let mediaType: 'image' | 'video' | 'carousel' | 'none' = 'none';
-        if (videoUrl) mediaType = 'video';
+        let mediaType: string = 'none';
+        if (videos.length > 0) mediaType = 'video';
         else if (mediaUrls.length > 1) mediaType = 'carousel';
         else if (mediaUrls.length === 1) mediaType = 'image';
         
-        // Extract CTA
-        const ctaEl = card.querySelector('a[role="link"][href*="l.facebook.com"], button span');
-        const ctaText = ctaEl?.textContent?.trim() || '';
-        
-        // Extract link info
-        const linkTitleEl = card.querySelector('div[data-testid="ad_archive_renderer_caption"] span');
-        const linkTitle = linkTitleEl?.textContent?.trim() || '';
-        
-        // Extract dates (look for "Started running on" text)
         const dateText = card.textContent || '';
-        const startDateMatch = dateText.match(/Started running on\s+(\w+\s+\d+,?\s*\d*)/i);
+        const startDateMatch = dateText.match(/Started running on ([A-Za-z]+ \d+, \d+)/);
         const startDate = startDateMatch ? startDateMatch[1] : '';
         
-        // Extract platforms
-        const platformText = card.textContent || '';
+        const isActive = !dateText.includes('Inactive') && !dateText.includes('stopped');
+        
         const platforms: string[] = [];
-        if (platformText.includes('Facebook')) platforms.push('facebook');
-        if (platformText.includes('Instagram')) platforms.push('instagram');
-        if (platformText.includes('Messenger')) platforms.push('messenger');
-        if (platformText.includes('Audience Network')) platforms.push('audience_network');
+        if (dateText.includes('Facebook')) platforms.push('facebook');
+        if (dateText.includes('Instagram')) platforms.push('instagram');
+        if (dateText.includes('Messenger')) platforms.push('messenger');
+        if (dateText.includes('Audience Network')) platforms.push('audience_network');
+        if (platforms.length === 0) platforms.push('facebook');
         
-        // Extract spend (if visible)
-        const spendMatch = dateText.match(/\$?([\d,]+)\s*-\s*\$?([\d,]+)/);
-        const spendLower = spendMatch ? parseInt(spendMatch[1].replace(/,/g, '')) : undefined;
-        const spendUpper = spendMatch ? parseInt(spendMatch[2].replace(/,/g, '')) : undefined;
+        let spendLower, spendUpper, impressionsLower, impressionsUpper;
+        const spendMatch = dateText.match(/\$(\d+(?:,\d+)?)\s*-\s*\$(\d+(?:,\d+)?)/);
+        if (spendMatch) {
+          spendLower = parseInt(spendMatch[1].replace(',', ''));
+          spendUpper = parseInt(spendMatch[2].replace(',', ''));
+        }
         
-        // Extract impressions
-        const impressionsMatch = dateText.match(/([\d,]+)\s*-\s*([\d,]+)\s*impression/i);
-        const impressionsLower = impressionsMatch ? parseInt(impressionsMatch[1].replace(/,/g, '')) : undefined;
-        const impressionsUpper = impressionsMatch ? parseInt(impressionsMatch[2].replace(/,/g, '')) : undefined;
+        const impMatch = dateText.match(/(\d+(?:,\d+)?)\s*-\s*(\d+(?:,\d+)?)\s*impressions/i);
+        if (impMatch) {
+          impressionsLower = parseInt(impMatch[1].replace(',', ''));
+          impressionsUpper = parseInt(impMatch[2].replace(',', ''));
+        }
         
-        // Generate unique ad ID
-        const adId = `${pageId}_${Date.now()}_${index}`;
+        const ctaButton = card.querySelector('a[role="button"], button');
+        const ctaText = ctaButton?.textContent?.trim() || '';
+        
+        const timestamp = Date.now();
+        const adId = `${pageId || pageName.replace(/\s/g, '_')}_${timestamp}_${index}`;
         
         results.push({
           ad_id: adId,
-          ad_fingerprint: '', // Will be generated after extraction
+          ad_fingerprint: '',
           page_id: pageId,
           page_name: pageName,
-          page_profile_picture_url: profilePicUrl,
-          page_profile_uri: pageLink,
-          ad_text: adTexts[0] || '',
-          ad_creative_bodies: adTexts,
-          ad_creative_link_titles: linkTitle ? [linkTitle] : [],
-          cta_text: ctaText,
+          page_profile_picture_url: profilePicture,
+          ad_text: adText,
           media_type: mediaType,
           media_urls: mediaUrls,
+          cta_text: ctaText,
           ad_delivery_start_time: startDate,
-          is_active: true,
-          currency: spendLower !== undefined ? 'USD' : undefined,
+          is_active: isActive,
+          platforms: platforms,
           spend_lower: spendLower,
           spend_upper: spendUpper,
           impressions_lower: impressionsLower,
           impressions_upper: impressionsUpper,
-          platforms: platforms.length > 0 ? platforms : ['facebook'],
-          search_query: queryKeyword,
-          search_location: queryLocation,
+          search_query: searchQuery.keyword,
+          search_location: searchQuery.location || '',
           scraped_at: new Date().toISOString(),
-          source_url: sourceUrl,
+          source_url: window.location.href,
         });
       } catch (e) {
-        console.error('Error extracting ad:', e);
+        // Skip malformed card
       }
     });
     
     return results;
-  }, {
-    queryKeyword: query.keyword,
-    queryLocation: query.location || '',
-    sourceUrl,
-  });
+  }, query);
   
-  // Generate fingerprints for each ad
   const adsWithFingerprints = (ads as MetaAd[]).map(ad => {
     ad.ad_fingerprint = generateAdFingerprint(ad);
     return ad;
@@ -241,7 +298,7 @@ export async function extractAds(
 }
 
 /**
- * Main scrape function for a single query
+ * Main scraping function for a single query
  */
 export async function scrapeQuery(
   page: Page,
@@ -253,155 +310,53 @@ export async function scrapeQuery(
   mediaType: string
 ): Promise<MetaAd[]> {
   const url = buildSearchUrl(query, country, adStatus, adType, mediaType);
-  log.info(`Scraping: ${query.keyword} ${query.location || ''} - ${url}`);
   
-  try {
-    // Navigate with retry logic
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        await page.goto(url, { 
-          waitUntil: 'domcontentloaded',
-          timeout: 60000 
-        });
-        break;
-      } catch (e) {
-        retries--;
-        if (retries === 0) throw e;
-        log.warning(`Navigation failed, retrying... (${retries} left)`);
-        await page.waitForTimeout(2000);
-      }
-    }
-    
-    // Wait for initial load
-    const loaded = await waitForAdsToLoad(page);
-    if (!loaded) {
-      log.warning('No ads loaded for query');
-      return [];
-    }
-    
-    // Check for blocking/captcha
-    const pageContent = await page.content();
-    if (pageContent.includes('unusual traffic') || pageContent.includes('checkpoint')) {
-      throw new Error('Blocked by Facebook - try different proxy');
-    }
-    
-    // Get initial count
-    let adCount = await page.evaluate(() => {
-      return document.querySelectorAll('[data-testid="ad_archive_renderer_card"], div[role="article"]').length;
-    });
-    
-    log.info(`Initial ads found: ${adCount}`);
-    
-    // Scroll to load more if needed
-    if (adCount < maxAds) {
-      adCount = await scrollAndLoadMore(page, maxAds, adCount);
-    }
-    
-    // Extract all ads
-    const ads = await extractAds(page, query, url);
-    
-    // Limit to maxAds
-    const limitedAds = ads.slice(0, maxAds);
-    log.info(`Extracted ${limitedAds.length} ads for query: ${query.keyword}`);
-    
-    return limitedAds;
-    
-  } catch (error) {
-    log.error(`Error scraping query ${query.keyword}: ${error}`);
-    throw error;
-  }
-}
-
-/**
- * Generate a unique fingerprint for an ad
- * This allows deduplication across different scrape runs
- */
-export function generateAdFingerprint(ad: Partial<MetaAd>): string {
-  // Combine multiple fields to create a unique identifier
-  const components = [
-    ad.page_id || '',
-    ad.page_name || '',
-    // Normalize ad text: lowercase, remove extra whitespace, first 200 chars
-    (ad.ad_text || '').toLowerCase().replace(/\s+/g, ' ').trim().substring(0, 200),
-    // First media URL (most stable identifier for creative)
-    (ad.media_urls?.[0] || '').split('?')[0], // Remove query params
-    // CTA text
-    (ad.cta_text || '').toLowerCase(),
-  ].join('|');
-  
-  // Create a simple hash
-  let hash = 0;
-  for (let i = 0; i < components.length; i++) {
-    const char = components.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  
-  // Return as hex string with prefix for readability
-  return `meta_${Math.abs(hash).toString(16).padStart(8, '0')}`;
-}
-
-/**
- * Deduplicate ads by fingerprint
- */
-export function deduplicateAds(ads: MetaAd[]): MetaAd[] {
-  const seen = new Set<string>();
-  const unique: MetaAd[] = [];
-  
-  for (const ad of ads) {
-    // Generate fingerprint if not already set
-    if (!ad.ad_fingerprint) {
-      ad.ad_fingerprint = generateAdFingerprint(ad);
-    }
-    
-    if (!seen.has(ad.ad_fingerprint)) {
-      seen.add(ad.ad_fingerprint);
-      unique.push(ad);
+  // Navigate with retry
+  let navSuccess = false;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await page.goto(url, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 30000 
+      });
+      navSuccess = true;
+      break;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await page.waitForTimeout(1000);
     }
   }
   
-  return unique;
-}
-
-/**
- * Create a deduplication tracker for use during scraping
- */
-export class DeduplicationTracker {
-  private seen = new Set<string>();
-  private duplicateCount = 0;
-  
-  /**
-   * Check if ad is duplicate and track it
-   * Returns true if ad is NEW (not a duplicate)
-   */
-  isNew(ad: MetaAd): boolean {
-    if (!ad.ad_fingerprint) {
-      ad.ad_fingerprint = generateAdFingerprint(ad);
-    }
-    
-    if (this.seen.has(ad.ad_fingerprint)) {
-      this.duplicateCount++;
-      return false;
-    }
-    
-    this.seen.add(ad.ad_fingerprint);
-    return true;
+  if (!navSuccess) {
+    throw new Error('Navigation failed');
   }
   
-  /**
-   * Pre-load existing fingerprints from database
-   */
-  loadExisting(fingerprints: string[]) {
-    for (const fp of fingerprints) {
-      this.seen.add(fp);
-    }
+  // Wait for ads to load
+  const loaded = await waitForAds(page);
+  if (!loaded) {
+    log.warning(`No ads loaded for "${query.keyword}"`);
+    return [];
   }
   
-  get stats() {
-    return {
-      unique: this.seen.size,
-      duplicates: this.duplicateCount,
-    };
+  // Check for blocking
+  const pageContent = await page.content();
+  if (pageContent.includes('Please try again later') || 
+      pageContent.includes('something went wrong')) {
+    throw new Error('Rate limited or blocked');
   }
+  
+  // Check for no results
+  if (pageContent.includes('No ads match') || 
+      pageContent.includes('no results')) {
+    log.info(`No ads found for "${query.keyword}"`);
+    return [];
+  }
+  
+  // Scroll to load more ads
+  await scrollForMore(page, maxAds);
+  
+  // Extract ads
+  const ads = await extractAdsFromPage(page, query);
+  
+  return ads.slice(0, maxAds);
 }
