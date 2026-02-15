@@ -1,6 +1,10 @@
 /**
- * Meta Ads Library Scraper - Main Entry Point
- * Optimized for Apify Creator Plan efficiency
+ * Meta Ads Library Scraper - AGGRESSIVE MODE
+ * Optimized for MAXIMUM throughput on Apify
+ * 
+ * Settings: 8 concurrent browsers, 120 requests/min
+ * Expected: 5,000-10,000 ads/hour
+ * Memory: Requires 4GB RAM allocation
  */
 
 import { Actor, ProxyConfiguration } from 'apify';
@@ -16,7 +20,7 @@ const DEFAULT_INPUT: Partial<ActorInput> = {
   adType: 'all',
   mediaType: 'all',
   scrapeAdDetails: false,
-  webhookBatchSize: 50,
+  webhookBatchSize: 100, // Larger batches for efficiency
 };
 
 async function main() {
@@ -32,13 +36,16 @@ async function main() {
     return;
   }
   
-  log.info('=' .repeat(50));
-  log.info('🚀 META ADS LIBRARY SCRAPER');
+  log.info('='.repeat(60));
+  log.info('🚀 META ADS LIBRARY SCRAPER - AGGRESSIVE MODE');
+  log.info('='.repeat(60));
   log.info(`📋 Queries: ${input.searchQueries.length}`);
   log.info(`🌍 Country: ${input.country}`);
   log.info(`📊 Max ads per query: ${input.maxAdsPerQuery}`);
+  log.info(`⚡ Concurrency: 8 browsers`);
+  log.info(`🔥 Rate: 120 requests/minute`);
   log.info(`🔗 Webhook: ${input.webhookUrl || 'Not configured'}`);
-  log.info('=' .repeat(50));
+  log.info('='.repeat(60));
   
   // Setup proxy configuration
   const proxyConfiguration = await Actor.createProxyConfiguration({
@@ -50,14 +57,15 @@ async function main() {
   const allAds: MetaAd[] = [];
   let totalProcessed = 0;
   let batchNumber = 0;
+  let queriesCompleted = 0;
+  const startTime = Date.now();
   
   // Initialize deduplication tracker
   const dedupeTracker = new DeduplicationTracker();
   
-  // Optional: Load existing fingerprints from Supabase to avoid re-scraping
+  // Optional: Load existing fingerprints from Supabase
   if (input.webhookUrl) {
     try {
-      // Try to fetch existing fingerprints from a dedicated endpoint
       const checkUrl = input.webhookUrl.replace('/import-ads', '/get-fingerprints');
       const response = await fetch(checkUrl, {
         method: 'POST',
@@ -71,11 +79,11 @@ async function main() {
         const data = await response.json();
         if (data.fingerprints?.length > 0) {
           dedupeTracker.loadExisting(data.fingerprints);
-          log.info(`📋 Loaded ${data.fingerprints.length} existing fingerprints for deduplication`);
+          log.info(`📋 Loaded ${data.fingerprints.length} existing fingerprints`);
         }
       }
     } catch (e) {
-      log.debug('Could not load existing fingerprints (endpoint may not exist)');
+      log.debug('Could not load existing fingerprints');
     }
   }
   
@@ -105,23 +113,34 @@ async function main() {
         body: JSON.stringify(payload),
       });
       
-      if (response.ok) {
-        log.info(`📤 Webhook batch ${batchNumber}: Sent ${ads.length} ads`);
-      } else {
-        log.warning(`⚠️ Webhook failed: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        log.warning(`⚠️ Webhook failed: ${response.status}`);
       }
     } catch (error) {
       log.error(`❌ Webhook error: ${error}`);
     }
   }
   
-  // Create crawler with minimal resource usage
+  // Progress logging
+  function logProgress() {
+    const elapsed = (Date.now() - startTime) / 1000 / 60; // minutes
+    const adsPerMin = totalProcessed / elapsed;
+    const remaining = input.searchQueries.length - queriesCompleted;
+    const eta = remaining / (queriesCompleted / elapsed);
+    
+    log.info(`📈 Progress: ${queriesCompleted}/${input.searchQueries.length} queries | ${totalProcessed} ads | ${adsPerMin.toFixed(0)} ads/min | ETA: ${eta.toFixed(1)} min`);
+  }
+  
+  // AGGRESSIVE CRAWLER CONFIGURATION
   const crawler = new PlaywrightCrawler({
     proxyConfiguration,
-    maxConcurrency: 2,
-    maxRequestsPerMinute: 10,
-    requestHandlerTimeoutSecs: 300,
-    navigationTimeoutSecs: 60,
+    
+    // ⚡ AGGRESSIVE SETTINGS
+    maxConcurrency: 8,              // 8 parallel browsers
+    maxRequestsPerMinute: 120,      // 2 requests per second
+    requestHandlerTimeoutSecs: 180, // 3 min timeout (faster fail)
+    navigationTimeoutSecs: 45,      // 45 sec nav timeout
+    maxRequestRetries: 2,           // Fewer retries, move on faster
     
     launchContext: {
       launchOptions: {
@@ -130,6 +149,8 @@ async function main() {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
+          '--disable-web-security',
+          '--disable-features=IsolateOrigins,site-per-process',
           '--single-process',
         ],
       },
@@ -137,19 +158,19 @@ async function main() {
     
     browserPoolOptions: {
       useFingerprints: true,
-      maxOpenPagesPerBrowser: 1,
+      maxOpenPagesPerBrowser: 2, // 2 pages per browser for efficiency
+      retireBrowserAfterPageCount: 20, // Fresh browser every 20 pages
     },
+    
+    // Minimal delays
+    sameDomainDelaySecs: 0.5,  // 500ms between same domain requests
     
     async requestHandler({ page, request }) {
       const query = request.userData.query as typeof input.searchQueries[0];
+      const queryIndex = request.userData.index as number;
       
-      log.info(`🔍 Scraping: "${query.keyword}" ${query.location ? `in ${query.location}` : ''}`);
-      
-      // Set viewport and headers
+      // Set viewport and headers quickly
       await page.setViewportSize({ width: 1366, height: 768 });
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'en-US,en;q=0.9',
-      });
       
       try {
         // Scrape this query
@@ -163,19 +184,16 @@ async function main() {
           input.mediaType
         );
         
-        // Filter out duplicates using tracker
+        // Filter duplicates
         const ads = rawAds.filter(ad => dedupeTracker.isNew(ad));
         const duplicatesSkipped = rawAds.length - ads.length;
         
-        if (duplicatesSkipped > 0) {
-          log.info(`🔄 Skipped ${duplicatesSkipped} duplicate ads`);
-        }
-        
-        // Add to collection
+        // Update counters
         allAds.push(...ads);
         totalProcessed += ads.length;
+        queriesCompleted++;
         
-        log.info(`✅ Found ${ads.length} new ads for "${query.keyword}"`);
+        log.info(`✅ [${queriesCompleted}/${input.searchQueries.length}] "${query.keyword}" → ${ads.length} ads ${duplicatesSkipped > 0 ? `(${duplicatesSkipped} dupes skipped)` : ''}`);
         
         // Stream to dataset immediately
         if (ads.length > 0) {
@@ -183,7 +201,7 @@ async function main() {
           
           // Send webhook batches
           if (input.webhookUrl) {
-            const batchSize = input.webhookBatchSize || 50;
+            const batchSize = input.webhookBatchSize || 100;
             for (let i = 0; i < ads.length; i += batchSize) {
               const batch = ads.slice(i, i + batchSize);
               await sendToWebhook(batch, query);
@@ -191,49 +209,62 @@ async function main() {
           }
         }
         
+        // Log progress every 10 queries
+        if (queriesCompleted % 10 === 0) {
+          logProgress();
+        }
+        
       } catch (error) {
         log.error(`❌ Error scraping "${query.keyword}": ${error}`);
+        queriesCompleted++;
       }
     },
     
     async failedRequestHandler({ request }) {
       const query = request.userData.query;
-      log.error(`💀 Failed: "${query?.keyword}" after ${request.retryCount} retries`);
+      log.warning(`💀 Failed: "${query?.keyword}" - moving on`);
+      queriesCompleted++;
     },
   });
   
-  // Build request list from search queries
+  // Build request list
   const requests = input.searchQueries.map((query, index) => ({
     url: `https://www.facebook.com/ads/library/?active_status=${input.adStatus}&ad_type=${input.adType}&country=${input.country}&q=${encodeURIComponent(query.keyword + (query.location ? ' ' + query.location : ''))}`,
     uniqueKey: `query-${index}-${query.keyword}-${query.location || 'all'}`,
-    userData: { query },
+    userData: { query, index },
   }));
   
   // Run the crawler
+  log.info(`🏁 Starting crawler with ${requests.length} queries...`);
   await crawler.run(requests);
   
-  // Final deduplication (belt and suspenders)
+  // Final stats
+  const totalTime = (Date.now() - startTime) / 1000 / 60;
   const uniqueAds = deduplicateAds(allAds);
-  
-  // Get deduplication stats
   const dedupeStats = dedupeTracker.stats;
   
-  // Summary
-  log.info('=' .repeat(50));
+  log.info('='.repeat(60));
   log.info('📊 SCRAPING COMPLETE');
-  log.info(`Total queries processed: ${input.searchQueries.length}`);
-  log.info(`Total ads scraped: ${totalProcessed}`);
-  log.info(`Duplicates skipped (in-run): ${dedupeStats.duplicates}`);
-  log.info(`Unique ads saved: ${uniqueAds.length}`);
-  log.info('=' .repeat(50));
+  log.info('='.repeat(60));
+  log.info(`⏱️  Total time: ${totalTime.toFixed(1)} minutes`);
+  log.info(`📋 Queries processed: ${queriesCompleted}/${input.searchQueries.length}`);
+  log.info(`📦 Total ads scraped: ${totalProcessed}`);
+  log.info(`🔄 Duplicates skipped: ${dedupeStats.duplicates}`);
+  log.info(`✨ Unique ads: ${uniqueAds.length}`);
+  log.info(`⚡ Rate: ${(totalProcessed / totalTime).toFixed(0)} ads/minute`);
+  log.info(`📤 Webhook batches sent: ${batchNumber}`);
+  log.info('='.repeat(60));
   
-  // Store summary in key-value store
+  // Store summary
   await Actor.setValue('SUMMARY', {
-    queriesProcessed: input.searchQueries.length,
+    queriesProcessed: queriesCompleted,
+    totalQueries: input.searchQueries.length,
     totalAdsScraped: totalProcessed,
     uniqueAds: uniqueAds.length,
     duplicatesSkipped: dedupeStats.duplicates,
     webhookBatches: batchNumber,
+    totalTimeMinutes: totalTime,
+    adsPerMinute: totalProcessed / totalTime,
     completedAt: new Date().toISOString(),
   });
   
