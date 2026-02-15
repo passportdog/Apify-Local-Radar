@@ -7,7 +7,7 @@ export interface SearchQuery {
   location?: string;
 }
 
-export interface ProxyConfiguration {
+export interface ProxyConfig {
   useApifyProxy?: boolean;
   apifyProxyGroups?: string[];
   proxyUrls?: string[];
@@ -21,30 +21,27 @@ export interface ActorInput {
   adType: 'all' | 'political_and_issue_ads' | 'housing_ads' | 'employment_ads' | 'credit_ads';
   mediaType: 'all' | 'image' | 'video' | 'meme' | 'none';
   scrapeAdDetails: boolean;
-  proxyConfiguration: ProxyConfiguration;
+  proxyConfiguration?: ProxyConfig;
   webhookUrl?: string;
-  webhookBatchSize: number;
+  webhookBatchSize?: number;
 }
 
 export interface MetaAd {
   // Identifiers
   ad_id: string;
+  ad_fingerprint: string;
   ad_archive_id?: string;
-  ad_fingerprint: string; // Unique hash for deduplication
-  
-  // Page/Advertiser info
   page_id: string;
   page_name: string;
   page_profile_picture_url?: string;
   page_profile_uri?: string;
-  page_categories?: string[];
-  page_like_count?: number;
+  page_likes?: number;
   
   // Ad content
   ad_text?: string;
   ad_creative_bodies?: string[];
-  ad_creative_link_captions?: string[];
   ad_creative_link_titles?: string[];
+  ad_creative_link_captions?: string[];
   ad_creative_link_descriptions?: string[];
   cta_text?: string;
   cta_type?: string;
@@ -60,7 +57,7 @@ export interface MetaAd {
   ad_delivery_stop_time?: string;
   is_active: boolean;
   
-  // Spend & reach (when available)
+  // Spend and reach estimates
   currency?: string;
   spend_lower?: number;
   spend_upper?: number;
@@ -73,9 +70,9 @@ export interface MetaAd {
   target_locations?: string[];
   target_ages?: string;
   target_gender?: string;
-  demographic_distribution?: DemographicData[];
+  demographic_distribution?: object;
   
-  // EU Transparency (if scrapeAdDetails enabled)
+  // EU transparency
   eu_total_reach?: number;
   beneficiary_payers?: string[];
   
@@ -86,25 +83,11 @@ export interface MetaAd {
   source_url: string;
 }
 
-export interface DemographicData {
-  age_range: string;
-  gender: string;
-  percentage: number;
-}
-
-export interface ScrapeResult {
-  success: boolean;
-  query: SearchQuery;
-  adsFound: number;
-  ads: MetaAd[];
-  error?: string;
-}
-
 export interface WebhookPayload {
   actorRunId: string;
   batchNumber: number;
-  totalBatches?: number;
   ads: MetaAd[];
   query: SearchQuery;
   timestamp: string;
+  isFinal: boolean;
 }
