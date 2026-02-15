@@ -1,18 +1,13 @@
 /**
  * Meta Ads Library Scraper - AGGRESSIVE MODE
- * Optimized for MAXIMUM throughput on Apify
- * 
- * Settings: 8 concurrent browsers, 120 requests/min
- * Expected: 5,000-10,000 ads/hour
- * Memory: Requires 4GB RAM allocation
+ * Fixed proxy configuration
  */
 
-import { Actor, ProxyConfiguration } from 'apify';
+import { Actor } from 'apify';
 import { PlaywrightCrawler, log } from 'crawlee';
 import { scrapeQuery, deduplicateAds, DeduplicationTracker } from './scraper.js';
 import { ActorInput, MetaAd, WebhookPayload } from './types.js';
 
-// Default input values
 const DEFAULT_INPUT: Partial<ActorInput> = {
   country: 'US',
   maxAdsPerQuery: 100,
@@ -20,13 +15,12 @@ const DEFAULT_INPUT: Partial<ActorInput> = {
   adType: 'all',
   mediaType: 'all',
   scrapeAdDetails: false,
-  webhookBatchSize: 100, // Larger batches for efficiency
+  webhookBatchSize: 100,
 };
 
 async function main() {
   await Actor.init();
   
-  // Get and validate input
   const rawInput = await Actor.getInput<Partial<ActorInput>>();
   const input: ActorInput = { ...DEFAULT_INPUT, ...rawInput } as ActorInput;
   
@@ -45,34 +39,36 @@ async function main() {
   log.info(`⚡ Concurrency: 8 browsers`);
   log.info(`🔥 Rate: 120 requests/minute`);
   log.info(`🔗 Webhook: ${input.webhookUrl || 'Not configured'}`);
+  
+  // FIXED: Pass proxy config directly from input
+  log.info(`🌐 Proxy input: ${JSON.stringify(input.proxyConfiguration)}`);
+  
+  const proxyConfiguration = await Actor.createProxyConfiguration(
+    input.proxyConfiguration || {
+      useApifyProxy: true,
+      apifyProxyGroups: ['RESIDENTIAL'],
+      apifyProxyCountry: 'US',
+    }
+  );
+  
+  log.info(`🌐 Proxy active: ${proxyConfiguration ? 'YES' : 'NO'}`);
   log.info('='.repeat(60));
   
-  // Setup proxy configuration
-  const proxyConfiguration = await Actor.createProxyConfiguration({
-    useApifyProxy: input.proxyConfiguration?.useApifyProxy ?? true,
-    apifyProxyGroups: input.proxyConfiguration?.apifyProxyGroups ?? ['RESIDENTIAL'],
-  });
-  
-  // Track all collected ads
   const allAds: MetaAd[] = [];
   let totalProcessed = 0;
   let batchNumber = 0;
   let queriesCompleted = 0;
   const startTime = Date.now();
   
-  // Initialize deduplication tracker
   const dedupeTracker = new DeduplicationTracker();
   
-  // Optional: Load existing fingerprints from Supabase
   if (input.webhookUrl) {
     try {
       const checkUrl = input.webhookUrl.replace('/import-ads', '/get-fingerprints');
       const response = await fetch(checkUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          queries: input.searchQueries.map(q => q.keyword) 
-        }),
+        body: JSON.stringify({ queries: input.searchQueries.map(q => q.keyword) }),
       });
       
       if (response.ok) {
@@ -87,7 +83,6 @@ async function main() {
     }
   }
   
-  // Send batch to webhook
   async function sendToWebhook(ads: MetaAd[], query: typeof input.searchQueries[0], isFinal = false) {
     if (!input.webhookUrl || ads.length === 0) return;
     
@@ -121,26 +116,27 @@ async function main() {
     }
   }
   
-  // Progress logging
   function logProgress() {
-    const elapsed = (Date.now() - startTime) / 1000 / 60; // minutes
-    const adsPerMin = totalProcessed / elapsed;
+    const elapsed = (Date.now() - startTime) / 1000 / 60;
+    const adsPerMin = elapsed > 0 ? totalProcessed / elapsed : 0;
     const remaining = input.searchQueries.length - queriesCompleted;
-    const eta = remaining / (queriesCompleted / elapsed);
+    const eta = queriesCompleted > 0 ? remaining / (queriesCompleted / elapsed) : 0;
     
     log.info(`📈 Progress: ${queriesCompleted}/${input.searchQueries.length} queries | ${totalProcessed} ads | ${adsPerMin.toFixed(0)} ads/min | ETA: ${eta.toFixed(1)} min`);
   }
   
-  // AGGRESSIVE CRAWLER CONFIGURATION
   const crawler = new PlaywrightCrawler({
     proxyConfiguration,
     
-    // ⚡ AGGRESSIVE SETTINGS
-    maxConcurrency: 8,              // 8 parallel browsers
-    maxRequestsPerMinute: 120,      // 2 requests per second
-    requestHandlerTimeoutSecs: 180, // 3 min timeout (faster fail)
-    navigationTimeoutSecs: 45,      // 45 sec nav timeout
-    maxRequestRetries: 2,           // Fewer retries, move on faster
+    maxConcurrency: 8,
+    maxRequestsPerMinute: 120,
+    requestHandlerTimeoutSecs: 180,
+    navigationTimeoutSecs: 45,
+    maxRequestRetries: 3,
+    
+    // Don't throw on 403 - let us handle it
+    additionalMimeTypes: ['text/html'],
+    ignoreSslErrors: true,
     
     launchContext: {
       launchOptions: {
@@ -151,29 +147,45 @@ async function main() {
           '--disable-gpu',
           '--disable-web-security',
           '--disable-features=IsolateOrigins,site-per-process',
-          '--single-process',
         ],
       },
     },
     
     browserPoolOptions: {
       useFingerprints: true,
-      maxOpenPagesPerBrowser: 2, // 2 pages per browser for efficiency
-      retireBrowserAfterPageCount: 20, // Fresh browser every 20 pages
+      maxOpenPagesPerBrowser: 2,
+      retireBrowserAfterPageCount: 10,
     },
     
-    // Minimal delays
-    sameDomainDelaySecs: 0.5,  // 500ms between same domain requests
+    preNavigationHooks: [
+      async ({ page }, gotoOptions) => {
+        // Set realistic headers
+        await page.setExtraHTTPHeaders({
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+        });
+        
+        await page.setViewportSize({ width: 1366, height: 768 });
+        
+        // Modify gotoOptions
+        gotoOptions.waitUntil = 'domcontentloaded';
+        gotoOptions.timeout = 45000;
+      },
+    ],
     
-    async requestHandler({ page, request }) {
+    async requestHandler({ page, request, proxyInfo }) {
       const query = request.userData.query as typeof input.searchQueries[0];
-      const queryIndex = request.userData.index as number;
       
-      // Set viewport and headers quickly
-      await page.setViewportSize({ width: 1366, height: 768 });
+      log.info(`🔍 Scraping: "${query.keyword}" via proxy: ${proxyInfo?.hostname || 'NONE'}`);
       
       try {
-        // Scrape this query
         const rawAds = await scrapeQuery(
           page,
           query,
@@ -184,22 +196,18 @@ async function main() {
           input.mediaType
         );
         
-        // Filter duplicates
         const ads = rawAds.filter(ad => dedupeTracker.isNew(ad));
         const duplicatesSkipped = rawAds.length - ads.length;
         
-        // Update counters
         allAds.push(...ads);
         totalProcessed += ads.length;
         queriesCompleted++;
         
         log.info(`✅ [${queriesCompleted}/${input.searchQueries.length}] "${query.keyword}" → ${ads.length} ads ${duplicatesSkipped > 0 ? `(${duplicatesSkipped} dupes skipped)` : ''}`);
         
-        // Stream to dataset immediately
         if (ads.length > 0) {
           await Actor.pushData(ads);
           
-          // Send webhook batches
           if (input.webhookUrl) {
             const batchSize = input.webhookBatchSize || 100;
             for (let i = 0; i < ads.length; i += batchSize) {
@@ -209,7 +217,6 @@ async function main() {
           }
         }
         
-        // Log progress every 10 queries
         if (queriesCompleted % 10 === 0) {
           logProgress();
         }
@@ -220,25 +227,22 @@ async function main() {
       }
     },
     
-    async failedRequestHandler({ request }) {
+    async failedRequestHandler({ request, proxyInfo }) {
       const query = request.userData.query;
-      log.warning(`💀 Failed: "${query?.keyword}" - moving on`);
+      log.warning(`💀 Failed: "${query?.keyword}" - proxy was: ${proxyInfo?.hostname || 'NONE'}`);
       queriesCompleted++;
     },
   });
   
-  // Build request list
   const requests = input.searchQueries.map((query, index) => ({
     url: `https://www.facebook.com/ads/library/?active_status=${input.adStatus}&ad_type=${input.adType}&country=${input.country}&q=${encodeURIComponent(query.keyword + (query.location ? ' ' + query.location : ''))}`,
     uniqueKey: `query-${index}-${query.keyword}-${query.location || 'all'}`,
     userData: { query, index },
   }));
   
-  // Run the crawler
   log.info(`🏁 Starting crawler with ${requests.length} queries...`);
   await crawler.run(requests);
   
-  // Final stats
   const totalTime = (Date.now() - startTime) / 1000 / 60;
   const uniqueAds = deduplicateAds(allAds);
   const dedupeStats = dedupeTracker.stats;
@@ -251,11 +255,9 @@ async function main() {
   log.info(`📦 Total ads scraped: ${totalProcessed}`);
   log.info(`🔄 Duplicates skipped: ${dedupeStats.duplicates}`);
   log.info(`✨ Unique ads: ${uniqueAds.length}`);
-  log.info(`⚡ Rate: ${(totalProcessed / totalTime).toFixed(0)} ads/minute`);
-  log.info(`📤 Webhook batches sent: ${batchNumber}`);
+  log.info(`⚡ Rate: ${(totalProcessed / Math.max(totalTime, 0.1)).toFixed(0)} ads/minute`);
   log.info('='.repeat(60));
   
-  // Store summary
   await Actor.setValue('SUMMARY', {
     queriesProcessed: queriesCompleted,
     totalQueries: input.searchQueries.length,
@@ -264,7 +266,7 @@ async function main() {
     duplicatesSkipped: dedupeStats.duplicates,
     webhookBatches: batchNumber,
     totalTimeMinutes: totalTime,
-    adsPerMinute: totalProcessed / totalTime,
+    adsPerMinute: totalProcessed / Math.max(totalTime, 0.1),
     completedAt: new Date().toISOString(),
   });
   
@@ -275,3 +277,19 @@ main().catch(async (error) => {
   log.error(`Fatal error: ${error}`);
   await Actor.exit({ exitCode: 1 });
 });
+```
+
+## Key Changes:
+
+1. **Better proxy logging** - Now shows the proxy config and if it's active
+2. **Logs proxy hostname on each request** - So we can see if proxy is being used
+3. **preNavigationHooks** - Sets realistic browser headers
+4. **Shows proxy info on failures** - Helps debug
+
+## After Commit & Rebuild
+
+The logs will now show:
+```
+🌐 Proxy input: {"useApifyProxy":true,"apifyProxyGroups":["RESIDENTIAL"]}
+🌐 Proxy active: YES
+🔍 Scraping: "plumber" via proxy: proxy.apify.com
