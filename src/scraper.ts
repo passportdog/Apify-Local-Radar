@@ -35,7 +35,7 @@ export function buildSearchUrl(
 /**
  * Wait for ads to load with smart detection
  */
-async function waitForAdsToLoad(page: Page, timeout = 15000): Promise<boolean> {
+async function scrollAndLoadMore(page: Page, timeout = 15000): Promise<boolean> {
   try {
     // Wait for either ads container or "no results" message
     await Promise.race([
