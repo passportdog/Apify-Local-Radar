@@ -1,60 +1,50 @@
 /**
  * Meta Ads Library Scraper - Main Entry Point
- * 
- * Optimized for Apify Creator Plan:
- * - Minimal memory usage (1GB default)
- * - Efficient proxy rotation
- * - Webhook support for Supabase integration
- * - Batch processing for large datasets
+ * Optimized for Apify Creator Plan efficiency
  */
 
-import { Actor, log } from 'apify';
-import { PlaywrightCrawler, ProxyConfiguration } from 'crawlee';
-import { ActorInput, MetaAd, SearchQuery, WebhookPayload } from './types.js';
+import { Actor, ProxyConfiguration } from 'apify';
+import { PlaywrightCrawler, log } from 'crawlee';
 import { scrapeQuery, deduplicateAds, DeduplicationTracker } from './scraper.js';
+import { ActorInput, MetaAd, WebhookPayload } from './types.js';
 
-// Constants for efficiency
-const DEFAULT_MEMORY_MBYTES = 1024; // 1GB - minimize compute costs
-const REQUESTS_PER_MINUTE = 10; // Conservative to avoid blocks
-const MAX_CONCURRENT_REQUESTS = 2; // Balance speed vs resources
+// Default input values
+const DEFAULT_INPUT: Partial<ActorInput> = {
+  country: 'US',
+  maxAdsPerQuery: 100,
+  adStatus: 'active',
+  adType: 'all',
+  mediaType: 'all',
+  scrapeAdDetails: false,
+  webhookBatchSize: 50,
+};
 
 async function main() {
   await Actor.init();
   
-  log.info('🚀 Meta Ads Library Scraper starting...');
+  // Get and validate input
+  const rawInput = await Actor.getInput<Partial<ActorInput>>();
+  const input: ActorInput = { ...DEFAULT_INPUT, ...rawInput } as ActorInput;
   
-  // Get input with defaults
-  const input = await Actor.getInput<ActorInput>() ?? {
-    searchQueries: [{ keyword: 'plumber', location: 'Ocala, FL' }],
-    country: 'US',
-    maxAdsPerQuery: 100,
-    adStatus: 'active',
-    adType: 'all',
-    mediaType: 'all',
-    scrapeAdDetails: false,
-    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
-    webhookBatchSize: 50,
-  };
+  if (!input.searchQueries || input.searchQueries.length === 0) {
+    log.error('No search queries provided!');
+    await Actor.exit({ exitCode: 1 });
+    return;
+  }
   
-  log.info(`Processing ${input.searchQueries.length} search queries`);
-  log.info(`Max ads per query: ${input.maxAdsPerQuery}`);
-  log.info(`Country: ${input.country}`);
-  log.info(`Webhook: ${input.webhookUrl || 'Not configured'}`);
+  log.info('=' .repeat(50));
+  log.info('🚀 META ADS LIBRARY SCRAPER');
+  log.info(`📋 Queries: ${input.searchQueries.length}`);
+  log.info(`🌍 Country: ${input.country}`);
+  log.info(`📊 Max ads per query: ${input.maxAdsPerQuery}`);
+  log.info(`🔗 Webhook: ${input.webhookUrl || 'Not configured'}`);
+  log.info('=' .repeat(50));
   
   // Setup proxy configuration
-  let proxyConfiguration: ProxyConfiguration | undefined;
-  
-  if (input.proxyConfiguration?.useApifyProxy) {
-    proxyConfiguration = new ProxyConfiguration({
-      groups: input.proxyConfiguration.apifyProxyGroups || ['RESIDENTIAL'],
-    });
-    log.info('Using Apify Proxy with RESIDENTIAL group');
-  } else if (input.proxyConfiguration?.proxyUrls?.length) {
-    proxyConfiguration = new ProxyConfiguration({
-      proxyUrls: input.proxyConfiguration.proxyUrls,
-    });
-    log.info('Using custom proxy URLs');
-  }
+  const proxyConfiguration = await Actor.createProxyConfiguration({
+    useApifyProxy: input.proxyConfiguration?.useApifyProxy ?? true,
+    apifyProxyGroups: input.proxyConfiguration?.apifyProxyGroups ?? ['RESIDENTIAL'],
+  });
   
   // Track all collected ads
   const allAds: MetaAd[] = [];
@@ -78,10 +68,10 @@ async function main() {
       });
       
       if (response.ok) {
-        const { fingerprints } = await response.json();
-        if (fingerprints?.length > 0) {
-          dedupeTracker.loadExisting(fingerprints);
-          log.info(`📋 Loaded ${fingerprints.length} existing fingerprints for deduplication`);
+        const data = await response.json();
+        if (data.fingerprints?.length > 0) {
+          dedupeTracker.loadExisting(data.fingerprints);
+          log.info(`📋 Loaded ${data.fingerprints.length} existing fingerprints for deduplication`);
         }
       }
     } catch (e) {
@@ -89,17 +79,18 @@ async function main() {
     }
   }
   
-  // Webhook helper
-  async function sendWebhook(ads: MetaAd[], query: SearchQuery, isFinal = false) {
+  // Send batch to webhook
+  async function sendToWebhook(ads: MetaAd[], query: typeof input.searchQueries[0], isFinal = false) {
     if (!input.webhookUrl || ads.length === 0) return;
     
     batchNumber++;
     const payload: WebhookPayload = {
-      actorRunId: Actor.getEnv().actorRunId || 'local',
+      actorRunId: Actor.getEnv().actorRunId || 'unknown',
       batchNumber,
       ads,
       query,
       timestamp: new Date().toISOString(),
+      isFinal,
     };
     
     try {
@@ -107,61 +98,55 @@ async function main() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Actor-Run-Id': Actor.getEnv().actorRunId || 'local',
-          'X-Batch-Number': batchNumber.toString(),
-          'X-Is-Final': isFinal.toString(),
+          'X-Actor-Run-Id': payload.actorRunId,
+          'X-Batch-Number': String(batchNumber),
+          'X-Is-Final': String(isFinal),
         },
         body: JSON.stringify(payload),
       });
       
-      if (!response.ok) {
-        log.warning(`Webhook failed: ${response.status} ${response.statusText}`);
+      if (response.ok) {
+        log.info(`📤 Webhook batch ${batchNumber}: Sent ${ads.length} ads`);
       } else {
-        log.info(`✅ Webhook batch ${batchNumber} sent: ${ads.length} ads`);
+        log.warning(`⚠️ Webhook failed: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
-      log.error(`Webhook error: ${error}`);
+      log.error(`❌ Webhook error: ${error}`);
     }
   }
   
   // Create crawler with minimal resource usage
   const crawler = new PlaywrightCrawler({
     proxyConfiguration,
+    maxConcurrency: 2,
+    maxRequestsPerMinute: 10,
+    requestHandlerTimeoutSecs: 300,
+    navigationTimeoutSecs: 60,
     
-    // Memory optimization
-    maxConcurrency: MAX_CONCURRENT_REQUESTS,
-    maxRequestsPerMinute: REQUESTS_PER_MINUTE,
-    
-    // Browser configuration
     launchContext: {
       launchOptions: {
-        headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
-          '--single-process', // Reduce memory
+          '--single-process',
         ],
       },
     },
     
-    // Use persistent browser context for session continuity
     browserPoolOptions: {
-      useFingerprints: true, // Random fingerprints
-      maxOpenPagesPerBrowser: 1, // One tab at a time
+      useFingerprints: true,
+      maxOpenPagesPerBrowser: 1,
     },
     
-    // Request handler
-    requestHandler: async ({ page, request }) => {
-      const query = request.userData.query as SearchQuery;
+    async requestHandler({ page, request }) {
+      const query = request.userData.query as typeof input.searchQueries[0];
       
-      log.info(`📍 Processing: ${query.keyword} ${query.location || ''}`);
+      log.info(`🔍 Scraping: "${query.keyword}" ${query.location ? `in ${query.location}` : ''}`);
       
-      // Set realistic viewport
+      // Set viewport and headers
       await page.setViewportSize({ width: 1366, height: 768 });
-      
-      // Set language and locale headers
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'en-US,en;q=0.9',
       });
@@ -190,54 +175,37 @@ async function main() {
         allAds.push(...ads);
         totalProcessed += ads.length;
         
-        // Store each ad to dataset immediately (streaming)
-        for (const ad of ads) {
-          await Actor.pushData(ad);
-        }
+        log.info(`✅ Found ${ads.length} new ads for "${query.keyword}"`);
         
-        log.info(`✅ Query complete: ${ads.length} ads (Total: ${totalProcessed})`);
-        
-        // Send webhook in batches
-        if (input.webhookUrl && ads.length > 0) {
-          const batches = [];
-          for (let i = 0; i < ads.length; i += input.webhookBatchSize) {
-            batches.push(ads.slice(i, i + input.webhookBatchSize));
-          }
+        // Stream to dataset immediately
+        if (ads.length > 0) {
+          await Actor.pushData(ads);
           
-          for (const batch of batches) {
-            await sendWebhook(batch, query);
+          // Send webhook batches
+          if (input.webhookUrl) {
+            const batchSize = input.webhookBatchSize || 50;
+            for (let i = 0; i < ads.length; i += batchSize) {
+              const batch = ads.slice(i, i + batchSize);
+              await sendToWebhook(batch, query);
+            }
           }
         }
         
       } catch (error) {
-        log.error(`❌ Query failed: ${query.keyword} - ${error}`);
-        
-        // Store error for debugging
-        await Actor.pushData({
-          error: true,
-          query,
-          message: String(error),
-          timestamp: new Date().toISOString(),
-        });
+        log.error(`❌ Error scraping "${query.keyword}": ${error}`);
       }
-      
-      // Small delay between queries (respectful scraping)
-      await page.waitForTimeout(2000 + Math.random() * 3000);
     },
     
-    // Retry failed requests
-    maxRequestRetries: 3,
-    
-    // Error handling
-    failedRequestHandler: async ({ request, error }) => {
-      log.error(`Request failed after retries: ${request.url} - ${error}`);
+    async failedRequestHandler({ request }) {
+      const query = request.userData.query;
+      log.error(`💀 Failed: "${query?.keyword}" after ${request.retryCount} retries`);
     },
   });
   
-  // Build request queue from search queries
+  // Build request list from search queries
   const requests = input.searchQueries.map((query, index) => ({
-    url: `https://www.facebook.com/ads/library/?q=${encodeURIComponent(query.keyword)}`,
-    uniqueKey: `query_${index}_${query.keyword}_${query.location || ''}`,
+    url: `https://www.facebook.com/ads/library/?active_status=${input.adStatus}&ad_type=${input.adType}&country=${input.country}&q=${encodeURIComponent(query.keyword + (query.location ? ' ' + query.location : ''))}`,
+    uniqueKey: `query-${index}-${query.keyword}-${query.location || 'all'}`,
     userData: { query },
   }));
   
@@ -262,20 +230,17 @@ async function main() {
   // Store summary in key-value store
   await Actor.setValue('SUMMARY', {
     queriesProcessed: input.searchQueries.length,
-    totalAdsCollected: totalProcessed,
+    totalAdsScraped: totalProcessed,
     uniqueAds: uniqueAds.length,
+    duplicatesSkipped: dedupeStats.duplicates,
+    webhookBatches: batchNumber,
     completedAt: new Date().toISOString(),
-    input: {
-      country: input.country,
-      maxAdsPerQuery: input.maxAdsPerQuery,
-      adStatus: input.adStatus,
-    },
   });
   
   await Actor.exit();
 }
 
 main().catch(async (error) => {
-  log.error(`Actor failed: ${error}`);
-  await Actor.exit(1);
+  log.error(`Fatal error: ${error}`);
+  await Actor.exit({ exitCode: 1 });
 });
