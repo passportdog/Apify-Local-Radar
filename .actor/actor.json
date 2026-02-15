@@ -1,17 +1,13 @@
 {
   "actorSpecification": 1,
-  "name": "local-radar-meta-ads",
-  "title": "Local Radar - Meta Ads Scraper",
-  "description": "High-efficiency Facebook/Meta Ad Library scraper for Local Radar. Extracts ad creative, spend data, impressions, and targeting info.",
+  "name": "meta-ads-library-scraper",
+  "title": "Meta Ads Library Scraper",
+  "description": "High-efficiency scraper for Facebook/Meta Ad Library. Extracts ads by keyword, location, and advertiser with full creative details.",
   "version": "1.0.0",
-  "input": "./INPUT_SCHEMA.json",
-  "dockerfile": "./Dockerfile",
-  "storages": {
-    "dataset": {
-      "actorSpecification": 1,
-      "title": "Meta Ads Dataset",
-      "description": "Scraped Meta/Facebook ads with full creative and performance data"
-    }
+  "buildTag": "latest",
+  "meta": {
+    "templateId": "ts-playwright-chrome"
   },
-  "buildTag": "latest"
+  "input": "./INPUT_SCHEMA.json",
+  "dockerfile": "./Dockerfile"
 }
