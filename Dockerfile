@@ -1,18 +1,16 @@
-# Use Apify's optimized Playwright image
 FROM apify/actor-node-playwright-chrome:20
 
-# Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --omit=dev --omit=optional \
-    && npm cache clean --force
+# Install ALL dependencies (including TypeScript for build)
+RUN npm install
 
-# Copy source code
 COPY . ./
 
 # Build TypeScript
 RUN npm run build
 
-# Run the actor
+# Remove dev dependencies to slim down image
+RUN npm prune --production
+
 CMD ["npm", "start"]
