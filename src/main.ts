@@ -1,8 +1,3 @@
-/**
- * Meta Ads Library Scraper - AGGRESSIVE MODE
- * Fixed proxy configuration
- */
-
 import { Actor } from 'apify';
 import { PlaywrightCrawler, log } from 'crawlee';
 import { scrapeQuery, deduplicateAds, DeduplicationTracker } from './scraper.js';
@@ -31,17 +26,15 @@ async function main() {
   }
   
   log.info('='.repeat(60));
-  log.info('🚀 META ADS LIBRARY SCRAPER - AGGRESSIVE MODE');
+  log.info('META ADS LIBRARY SCRAPER - AGGRESSIVE MODE');
   log.info('='.repeat(60));
-  log.info(`📋 Queries: ${input.searchQueries.length}`);
-  log.info(`🌍 Country: ${input.country}`);
-  log.info(`📊 Max ads per query: ${input.maxAdsPerQuery}`);
-  log.info(`⚡ Concurrency: 8 browsers`);
-  log.info(`🔥 Rate: 120 requests/minute`);
-  log.info(`🔗 Webhook: ${input.webhookUrl || 'Not configured'}`);
-  
-  // FIXED: Pass proxy config directly from input
-  log.info(`🌐 Proxy input: ${JSON.stringify(input.proxyConfiguration)}`);
+  log.info('Queries: ' + input.searchQueries.length);
+  log.info('Country: ' + input.country);
+  log.info('Max ads per query: ' + input.maxAdsPerQuery);
+  log.info('Concurrency: 8 browsers');
+  log.info('Rate: 120 requests/minute');
+  log.info('Webhook: ' + (input.webhookUrl || 'Not configured'));
+  log.info('Proxy input: ' + JSON.stringify(input.proxyConfiguration));
   
   const proxyConfiguration = await Actor.createProxyConfiguration(
     input.proxyConfiguration || {
@@ -51,7 +44,7 @@ async function main() {
     }
   );
   
-  log.info(`🌐 Proxy active: ${proxyConfiguration ? 'YES' : 'NO'}`);
+  log.info('Proxy active: ' + (proxyConfiguration ? 'YES' : 'NO'));
   log.info('='.repeat(60));
   
   const allAds: MetaAd[] = [];
@@ -75,7 +68,7 @@ async function main() {
         const data = await response.json();
         if (data.fingerprints?.length > 0) {
           dedupeTracker.loadExisting(data.fingerprints);
-          log.info(`📋 Loaded ${data.fingerprints.length} existing fingerprints`);
+          log.info('Loaded ' + data.fingerprints.length + ' existing fingerprints');
         }
       }
     } catch (e) {
@@ -109,10 +102,10 @@ async function main() {
       });
       
       if (!response.ok) {
-        log.warning(`⚠️ Webhook failed: ${response.status}`);
+        log.warning('Webhook failed: ' + response.status);
       }
     } catch (error) {
-      log.error(`❌ Webhook error: ${error}`);
+      log.error('Webhook error: ' + error);
     }
   }
   
@@ -121,22 +114,16 @@ async function main() {
     const adsPerMin = elapsed > 0 ? totalProcessed / elapsed : 0;
     const remaining = input.searchQueries.length - queriesCompleted;
     const eta = queriesCompleted > 0 ? remaining / (queriesCompleted / elapsed) : 0;
-    
-    log.info(`📈 Progress: ${queriesCompleted}/${input.searchQueries.length} queries | ${totalProcessed} ads | ${adsPerMin.toFixed(0)} ads/min | ETA: ${eta.toFixed(1)} min`);
+    log.info('Progress: ' + queriesCompleted + '/' + input.searchQueries.length + ' queries | ' + totalProcessed + ' ads | ' + adsPerMin.toFixed(0) + ' ads/min');
   }
   
   const crawler = new PlaywrightCrawler({
     proxyConfiguration,
-    
     maxConcurrency: 8,
     maxRequestsPerMinute: 120,
     requestHandlerTimeoutSecs: 180,
     navigationTimeoutSecs: 45,
     maxRequestRetries: 3,
-    
-    // Don't throw on 403 - let us handle it
-    additionalMimeTypes: ['text/html'],
-    ignoreSslErrors: true,
     
     launchContext: {
       launchOptions: {
@@ -146,7 +133,6 @@ async function main() {
           '--disable-dev-shm-usage',
           '--disable-gpu',
           '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
         ],
       },
     },
@@ -159,22 +145,14 @@ async function main() {
     
     preNavigationHooks: [
       async ({ page }, gotoOptions) => {
-        // Set realistic headers
         await page.setExtraHTTPHeaders({
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
           'Accept-Encoding': 'gzip, deflate, br',
           'Connection': 'keep-alive',
           'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1',
         });
-        
         await page.setViewportSize({ width: 1366, height: 768 });
-        
-        // Modify gotoOptions
         gotoOptions.waitUntil = 'domcontentloaded';
         gotoOptions.timeout = 45000;
       },
@@ -183,7 +161,7 @@ async function main() {
     async requestHandler({ page, request, proxyInfo }) {
       const query = request.userData.query as typeof input.searchQueries[0];
       
-      log.info(`🔍 Scraping: "${query.keyword}" via proxy: ${proxyInfo?.hostname || 'NONE'}`);
+      log.info('Scraping: "' + query.keyword + '" via proxy: ' + (proxyInfo?.hostname || 'NONE'));
       
       try {
         const rawAds = await scrapeQuery(
@@ -203,7 +181,7 @@ async function main() {
         totalProcessed += ads.length;
         queriesCompleted++;
         
-        log.info(`✅ [${queriesCompleted}/${input.searchQueries.length}] "${query.keyword}" → ${ads.length} ads ${duplicatesSkipped > 0 ? `(${duplicatesSkipped} dupes skipped)` : ''}`);
+        log.info('Done [' + queriesCompleted + '/' + input.searchQueries.length + '] "' + query.keyword + '" -> ' + ads.length + ' ads');
         
         if (ads.length > 0) {
           await Actor.pushData(ads);
@@ -222,25 +200,25 @@ async function main() {
         }
         
       } catch (error) {
-        log.error(`❌ Error scraping "${query.keyword}": ${error}`);
+        log.error('Error scraping "' + query.keyword + '": ' + error);
         queriesCompleted++;
       }
     },
     
     async failedRequestHandler({ request, proxyInfo }) {
       const query = request.userData.query;
-      log.warning(`💀 Failed: "${query?.keyword}" - proxy was: ${proxyInfo?.hostname || 'NONE'}`);
+      log.warning('Failed: "' + query?.keyword + '" - proxy was: ' + (proxyInfo?.hostname || 'NONE'));
       queriesCompleted++;
     },
   });
   
   const requests = input.searchQueries.map((query, index) => ({
-    url: `https://www.facebook.com/ads/library/?active_status=${input.adStatus}&ad_type=${input.adType}&country=${input.country}&q=${encodeURIComponent(query.keyword + (query.location ? ' ' + query.location : ''))}`,
-    uniqueKey: `query-${index}-${query.keyword}-${query.location || 'all'}`,
+    url: 'https://www.facebook.com/ads/library/?active_status=' + input.adStatus + '&ad_type=' + input.adType + '&country=' + input.country + '&q=' + encodeURIComponent(query.keyword + (query.location ? ' ' + query.location : '')),
+    uniqueKey: 'query-' + index + '-' + query.keyword + '-' + (query.location || 'all'),
     userData: { query, index },
   }));
   
-  log.info(`🏁 Starting crawler with ${requests.length} queries...`);
+  log.info('Starting crawler with ' + requests.length + ' queries...');
   await crawler.run(requests);
   
   const totalTime = (Date.now() - startTime) / 1000 / 60;
@@ -248,14 +226,14 @@ async function main() {
   const dedupeStats = dedupeTracker.stats;
   
   log.info('='.repeat(60));
-  log.info('📊 SCRAPING COMPLETE');
+  log.info('SCRAPING COMPLETE');
   log.info('='.repeat(60));
-  log.info(`⏱️  Total time: ${totalTime.toFixed(1)} minutes`);
-  log.info(`📋 Queries processed: ${queriesCompleted}/${input.searchQueries.length}`);
-  log.info(`📦 Total ads scraped: ${totalProcessed}`);
-  log.info(`🔄 Duplicates skipped: ${dedupeStats.duplicates}`);
-  log.info(`✨ Unique ads: ${uniqueAds.length}`);
-  log.info(`⚡ Rate: ${(totalProcessed / Math.max(totalTime, 0.1)).toFixed(0)} ads/minute`);
+  log.info('Total time: ' + totalTime.toFixed(1) + ' minutes');
+  log.info('Queries processed: ' + queriesCompleted + '/' + input.searchQueries.length);
+  log.info('Total ads scraped: ' + totalProcessed);
+  log.info('Duplicates skipped: ' + dedupeStats.duplicates);
+  log.info('Unique ads: ' + uniqueAds.length);
+  log.info('Rate: ' + (totalProcessed / Math.max(totalTime, 0.1)).toFixed(0) + ' ads/minute');
   log.info('='.repeat(60));
   
   await Actor.setValue('SUMMARY', {
@@ -274,22 +252,6 @@ async function main() {
 }
 
 main().catch(async (error) => {
-  log.error(`Fatal error: ${error}`);
+  log.error('Fatal error: ' + error);
   await Actor.exit({ exitCode: 1 });
 });
-```
-
-## Key Changes:
-
-1. **Better proxy logging** - Now shows the proxy config and if it's active
-2. **Logs proxy hostname on each request** - So we can see if proxy is being used
-3. **preNavigationHooks** - Sets realistic browser headers
-4. **Shows proxy info on failures** - Helps debug
-
-## After Commit & Rebuild
-
-The logs will now show:
-```
-🌐 Proxy input: {"useApifyProxy":true,"apifyProxyGroups":["RESIDENTIAL"]}
-🌐 Proxy active: YES
-🔍 Scraping: "plumber" via proxy: proxy.apify.com
