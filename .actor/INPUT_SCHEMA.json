@@ -1,0 +1,96 @@
+{
+  "title": "Meta Ads Library Scraper Input",
+  "description": "Configure your Meta Ad Library scraping job",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "searchQueries": {
+      "title": "Search Queries",
+      "type": "array",
+      "description": "List of search queries. Each query can include a keyword and optional location.",
+      "prefill": [
+        { "keyword": "plumber", "location": "Ocala, FL" },
+        { "keyword": "hvac", "location": "Ocala, FL" }
+      ],
+      "editor": "json",
+      "items": {
+        "type": "object",
+        "properties": {
+          "keyword": { "type": "string" },
+          "location": { "type": "string" }
+        },
+        "required": ["keyword"]
+      }
+    },
+    "country": {
+      "title": "Country",
+      "type": "string",
+      "description": "Country code for ad targeting (US, GB, CA, AU, etc.)",
+      "default": "US",
+      "editor": "textfield"
+    },
+    "maxAdsPerQuery": {
+      "title": "Max Ads Per Query",
+      "type": "integer",
+      "description": "Maximum number of ads to scrape per search query",
+      "default": 100,
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "adStatus": {
+      "title": "Ad Status",
+      "type": "string",
+      "description": "Filter by ad status",
+      "default": "active",
+      "enum": ["active", "inactive", "all"],
+      "enumTitles": ["Active Only", "Inactive Only", "All Ads"]
+    },
+    "adType": {
+      "title": "Ad Type",
+      "type": "string",
+      "description": "Type of ads to scrape",
+      "default": "all",
+      "enum": ["all", "political_and_issue_ads", "housing_ads", "employment_ads", "credit_ads"],
+      "enumTitles": ["All Ads", "Political/Issue Ads", "Housing Ads", "Employment Ads", "Credit Ads"]
+    },
+    "mediaType": {
+      "title": "Media Type",
+      "type": "string",
+      "description": "Filter by creative media type",
+      "default": "all",
+      "enum": ["all", "image", "video", "meme", "none"],
+      "enumTitles": ["All Types", "Image Only", "Video Only", "Meme Only", "No Media"]
+    },
+    "scrapeAdDetails": {
+      "title": "Scrape Extended Details",
+      "type": "boolean",
+      "description": "Scrape additional details like EU transparency data (slower but more data)",
+      "default": false
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy settings. Use residential proxies for best results.",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      },
+      "editor": "proxy"
+    },
+    "webhookUrl": {
+      "title": "Webhook URL",
+      "type": "string",
+      "description": "URL to POST results to (e.g., your Supabase Edge Function)",
+      "editor": "textfield"
+    },
+    "webhookBatchSize": {
+      "title": "Webhook Batch Size",
+      "type": "integer",
+      "description": "Number of ads to send per webhook request",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 500
+    }
+  },
+  "required": ["searchQueries"]
+}

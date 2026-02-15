@@ -1,0 +1,28 @@
+{
+  "name": "meta-ads-library-scraper",
+  "version": "1.0.0",
+  "description": "High-efficiency Meta Ad Library scraper for Local Radar",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node dist/main.js",
+    "build": "tsc",
+    "dev": "tsx src/main.ts",
+    "test": "tsx src/test.ts"
+  },
+  "author": "Local Radar",
+  "license": "ISC",
+  "dependencies": {
+    "apify": "^3.2.0",
+    "crawlee": "^3.11.0",
+    "playwright": "^1.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
